@@ -1,0 +1,273 @@
+<html>
+  <head>
+    <title></title>
+
+  <style type="text/css" media="screen">
+    tbody td {
+      text-align: right;
+    }
+    thead td {
+      text-align:  center;
+    }
+  </style>
+  </head>
+  <body>
+    <div style="display: inline-block;">
+      <div style="text-align:center;">SELL</div>
+      <table id="sell"></table>
+    </div>
+    <div style="display: inline-block;">
+      <div style="text-align:center;">BUY</div>
+      <table id="buy"></table>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.2.1.min.js" integrity="sha256-hwg4gsxgFZhOsEEamdOYGBf13FyQuiTwlAQgxVSNgt4=" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.4/lodash.min.js"></script>
+    <script src='ripple-lib/ripple-0.17.4.js'></script>
+    <script src='ripple-lib/ripple-address-codec.min.js'></script>
+    <script src="ripple-orderbook-0.1.3.min.js"></script>
+
+    <script type="text/template" id="tmpl-book">
+      <caption><%= currencyGets %>/<%= currencyPays %></caption>
+      <thead>
+        <tr>
+          <td>Price</td>
+          <td><%= currencyGets %></td>
+          <td><%= currencyPays %></td>
+          <td>Sum : <%= currencyPays %></td>
+        </tr>
+      </thead>
+      <tbody class="offers"></tbody>
+    </script>
+    <script type="text/template" id="tmpl-offer">
+     <tr class="offer" data-price="<%= offer.price %>">
+       <td><%= offer.price %></td>
+       <td><%= offer.gets.value.toFixed(3) %></td>
+       <td><%= offer.pays.value.toFixed(3) %></td>
+       <td><%= offer.counter_sum.toFixed(3) %></td>
+     </tr>
+    </script>
+
+
+    <script type="text/javascript">
+      var api = new ripple.RippleAPI({server: 'wss://s1.ripple.com'});
+
+      var tx_options = [{
+        currency_gets: 'JPY',
+        issuer_gets: 'rB3gZey7VWHYRqJHLoHDEJXJ2pEPNieKiS',
+        // issuer_pays: 'rB3gZey7VWHYRqJHLoHDEJXJ2pEPNieKiS',
+        currency_pays: 'XRP'
+      }, {
+        currency_gets: 'XRP',
+        // issuer_gets: 'rB3gZey7VWHYRqJHLoHDEJXJ2pEPNieKiS',
+        issuer_pays: 'rB3gZey7VWHYRqJHLoHDEJXJ2pEPNieKiS',
+        currency_pays: 'JPY'
+      }];
+
+      api.connect().then(function() {
+        return Promise.all([
+          new Book(api, tx_options[0], "buy"),
+          new Book(api, tx_options[1], "sell")]).then(function(books){
+            return books;
+        });
+      }).then(function(book) {
+        window.book = book
+        $("table#buy").append(book[0].$el)
+        $("table#sell").append(book[1].$el)
+      });
+
+      function Book(api, options, type) {
+        var self = this;
+        this._offers = [];
+        this.orderBook = rippleOrderbook.OrderBook.createOrderBook(api, options);
+
+        this.init=function(){
+          this.orderBook.requestOffers().then(function(offers) {
+            _.forEach(offers, function(offer) {
+              var book_offer = new Book.Offer(offer, type);
+              var tx_index = _.findIndex(self._offers, { price: book_offer.price });
+
+              if(tx_index == -1) {
+                self._offers.push(book_offer);
+              } else {
+                self._offers[tx_index].gets.value += book_offer.gets.value;
+                self._offers[tx_index].pays.value += book_offer.pays.value;
+              }
+            });
+            self._render();
+          });
+        }
+
+        this.$el =$(Book.template({
+          currencyGets: options.currency_gets,
+          currencyPays: options.currency_pays
+        }));
+
+        this._render=function(){
+          var sum = 0;
+          if(type == "sell"){
+            self._offers = _.sortBy(self._offers, function(offer){ return offer.price; });
+          }
+          _.forEach(this._offers, function(offer){
+            offer.counter_sum = sum += offer.counter_sum;
+            offer.init();
+            $('#'+ type +' > .offers', this.$el).append(offer.$el)
+          });
+        }
+
+        this._summation=function(){
+          var list = $('#'+ type +' > .offers')[0].children;
+          var sum = 0, test;
+          _.forEach(list, function(node){
+            test = $(node)[0]
+            sum += parseFloat(test.children[2].innerHTML)
+            test.children[3].innerHTML = sum.toFixed(3)
+          });
+        }
+
+        this.init();
+        this.orderBook.on("offer_added", function(offer){
+          var tx = new Book.Offer(offer, type);
+          var list = $('#'+ type +' > .offers', this.$el)[0].children;
+          var inserted = false, _node_price, base, counter;
+          _.forEach(list, function(node){
+             _node_price = node.children[0];
+            var _exist = $('tr[data-price="'+ tx.price +'"]', this.$el);
+            if(_exist.length > 0){
+              _exist.fadeOut()
+              base = parseFloat(_exist[0].children[1].innerHTML) + parseFloat(tx.gets.value.toFixed(3))
+              counter = parseFloat(_exist[0].children[2].innerHTML) + parseFloat(tx.gets.value.toFixed(3))
+
+              console.log(
+                "%c_exist_base : "+ _exist[0].children[1].innerHTML +
+                " _exist_counter : "+  _exist[0].children[2].innerHTML + "\n" +
+                "tx_base : " + tx.gets.value.toFixed(3) + " tx_counter : "+ tx.pays.value.toFixed(3) + "\n" +
+                "total_base : " + base + " total_counter : " + counter + "\n" +
+                "Price : " + tx.price, "color: blue;");
+
+              _exist[0].children[1].innerHTML = base.toFixed(3);
+              _exist[0].children[2].innerHTML = counter.toFixed(3);
+              _exist.fadeIn();
+              inserted=true;
+              self._summation();
+              return false;
+            } else {
+              if(type == 'sell'){
+                if(parseFloat(tx.price) < parseFloat(_node_price.innerHTML)){
+                  $(tx.$el).insertBefore(node);
+                  inserted = true;
+                  self._summation();
+                  console.log("add inserted before: "+type, _node_price.innerHTML, tx.price);
+                  return false;
+                }
+              } else {
+                if(parseFloat(tx.price) > parseFloat(_node_price.innerHTML)){
+                  $(tx.$el).insertBefore(node);
+                  inserted = true;
+                  self._summation();
+                  console.log("add inserted before: "+type, tx.price);
+                  return false;
+                }
+              }
+            }
+          });
+
+          if(!inserted) {
+            $('#'+ type +' > .offers', this.$el).append(tx.$el)
+            self._summation();
+            console.log("add append "+type, tx.price);
+          }
+        });
+
+        this.orderBook.on("offer_removed", function(offer){
+          var tx = new Book.Offer(offer, type);
+          var blocks = $("#"+type+' tr[data-price="'+tx.price+'"]');
+          if(blocks.length > 0) {
+            var base =
+              parseFloat(blocks[0].children[1].innerHTML) - tx.gets.value.toFixed(3);
+            var counter =
+              parseFloat(blocks[0].children[2].innerHTML) - tx.pays.value.toFixed(3);
+
+            console.log(
+              "%cblck_base : "+ blocks[0].children[1].innerHTML +
+              " blck_counter : "+  blocks[0].children[2].innerHTML + "\n" +
+              "tx_base : " + tx.gets.value.toFixed(3) + " tx_counter : "+ tx.pays.value.toFixed(3) + "\n" +
+              "total_base : " + base + " total_counter : " + counter + "\n" +
+              "Price : " + tx.price, "color: red;");
+
+            if(base <= 0 || counter <= 0) {
+              blocks.remove();
+            } else {
+              blocks[0].children[1].innerHTML = base.toFixed(3);
+              blocks[0].children[2].innerHTML = counter.toFixed(3);
+            }
+          }
+        });
+
+        this.orderBook.on("offer_changed", function(offer){
+          var tx = new Book.Offer(offer, type);
+          var blocks = $("#"+type+' tr[data-price="'+tx.price+'"]');
+          if(blocks.length > 0) {
+            blocks.fadeOut()
+            blocks[0].children[1].innerHTML = tx.gets.value.toFixed(3);
+            blocks[0].children[2].innerHTML = tx.pays.value.toFixed(3);
+            self._summation();
+            blocks.fadeIn()
+          }
+          console.log("update "+type, tx, blocks);
+        });
+      }
+
+      Book.template = _.template($('#tmpl-book').text());
+      Book.format = function(value){
+        if(typeof value != "number"){
+          throw "Value is not a number";
+          return;
+        }
+        return parseFloat(value.toFixed(3));
+      }
+      Book.Offer=function(offer, type) {
+        var XRP_ADJUST = 1000000;
+        this.tx = offer;
+        this.$el = null;
+        this.direction = type;
+
+        this._format = Book.format;
+
+        this._template = _.template($('#tmpl-offer').text());
+
+        this.init = function(){
+          this.$el = $(this._template({ offer: this }));
+        }
+
+        this.gets = gets = typeof offer.TakerGets == "string"? {
+          currency: "XRP",
+          value: parseFloat(offer.TakerGets) / XRP_ADJUST,
+          issuer: null
+        } : {
+          currency: offer.TakerGets.currency,
+          value: parseFloat(offer.TakerGets.value),
+          issuer: offer.TakerGets.issuer
+        };
+
+        this.pays = pays = typeof offer.TakerPays == "string"? {
+          currency: "XRP",
+          value: parseFloat(offer.TakerPays) / XRP_ADJUST,
+          issuer: null
+        } : {
+          currency: offer.TakerPays.currency,
+          value: parseFloat(offer.TakerPays.value),
+          issuer: offer.TakerPays.issuer
+        };
+
+        this.counter_sum = this.pays.value;
+        if(this.direction == 'sell')
+          this.price = (this.pays.value / this.gets.value).toPrecision(8);
+        else
+          this.price = (this.gets.value / this.pays.value).toPrecision(8);
+        this.init();
+      }
+    </script>
+
+  </body>
+</html>
